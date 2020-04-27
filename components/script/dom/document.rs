@@ -380,6 +380,7 @@ pub struct Document {
     csp_list: DomRefCell<Option<CspList>>,
     /// https://w3c.github.io/slection-api/#dfn-selection
     selection: MutNullableDom<Selection>,
+    dirty_root: MutNullableDom<Element>,
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -439,6 +440,50 @@ enum ElementLookupResult {
 
 #[allow(non_snake_case)]
 impl Document {
+    pub fn note_dirty_node(&self, node: &Node) {
+        debug_assert!(*node.owner_doc() == *self);
+        if node == self.upcast::<Node>() {
+            return;
+        }
+
+        if !node.is_connected() {
+            return;
+        }
+
+        for ancestor in node.inclusive_ancestors(ShadowIncluding::Yes) {
+            if ancestor.get_flag(NodeFlags::HAS_DIRTY_DESCENDANTS) {
+                break;
+            }
+            if ancestor.is::<Element>() {
+                ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
+            }
+        }
+
+        match self.dirty_root.get() {
+            None => {
+                if let Some(element) = node.downcast::<Element>() {
+                    self.dirty_root.set(Some(element));
+                } else {
+                    let parent = node
+                        .inclusive_ancestors(ShadowIncluding::Yes)
+                        .nth(1)
+                        .unwrap();
+                    self.dirty_root
+                        .set(Some(parent.downcast::<Element>().unwrap()));
+                }
+            },
+            Some(root) => {
+                let common_ancestor = node.common_ancestor(root.upcast(), ShadowIncluding::Yes);
+                self.dirty_root
+                    .set(Some(&common_ancestor.downcast::<Element>().unwrap()));
+            },
+        };
+    }
+
+    pub fn take_dirty_root(&self) -> Option<DomRoot<Element>> {
+        self.dirty_root.take()
+    }
+
     #[inline]
     pub fn loader(&self) -> Ref<DocumentLoader> {
         self.loader.borrow()
@@ -2904,6 +2949,7 @@ impl Document {
             dirty_webgl_contexts: DomRefCell::new(HashMap::new()),
             csp_list: DomRefCell::new(None),
             selection: MutNullableDom::new(None),
+            dirty_root: Default::default(),
         }
     }
 
